@@ -1,0 +1,20 @@
+{
+    "name": "SWeetJelly.Editor",
+    "rootNamespace": "SWeetJelly.Editor",
+    "references": [
+        "SWeetJelly.Editor.Attributes",
+        "Unity.TextMeshPro",
+        "SWeetJelly.Utils"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

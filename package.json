@@ -1,0 +1,16 @@
+{
+  "name": "com.sweetjelly.editor",
+  "version": "1.0.0",
+  "displayName": "SWeetJelly Editor",
+  "description": "This is SWeetJelly Editor",
+  "unity": "2022.3",
+  "dependencies": {
+    "com.unity.textmeshpro": "3.0.6",
+    "com.sweetjelly.utils": "1.7.0"
+ },
+  "author": {
+    "name": "SWeetJellyStudio",
+    "email": "sweetjellystudio@gmail.com",
+    "url": "https://www.sweetjellystudio.com"
+  }
+}
