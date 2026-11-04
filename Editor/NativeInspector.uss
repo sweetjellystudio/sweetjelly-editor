@@ -1,0 +1,7 @@
+.sj-inspector { padding-top: 3px; padding-bottom: 3px; }
+.sj-hidden { display: none; }
+.sj-horizontal { flex-direction: row; align-items: flex-start; }
+.sj-horizontal > * { flex-grow: 1; flex-shrink: 1; }
+.sj-group { margin-top: 4px; margin-bottom: 4px; padding-left: 4px; padding-right: 4px; border-left-width: 1px; border-left-color: rgb(110, 110, 110); }
+.sj-selected { -unity-font-style: bold; }
+.sj-readonly { white-space: normal; margin-left: 3px; margin-top: 2px; margin-bottom: 2px; }

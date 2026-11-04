@@ -9,12 +9,18 @@ using SWeetJelly.Editor.Attributes;
 namespace SWeetJelly.Editor
 {
     [CanEditMultipleObjects]
-    [CustomEditor(typeof(MonoBehaviour), true)]
-    public sealed class MonoBehaviourEditor : SweetJellyEditor {}
+    [CustomEditor(typeof(MonoBehaviour), true, isFallback = true)]
+    public sealed class MonoBehaviourEditor : SweetJellyEditor
+    {
+        public override UnityEngine.UIElements.VisualElement CreateInspectorGUI() => NativeInspector.Create(this);
+    }
 
     [CanEditMultipleObjects]
-    [CustomEditor(typeof(ScriptableObject), true)]
-    public sealed class ScriptableObjectEditor : SweetJellyEditor {}
+    [CustomEditor(typeof(ScriptableObject), true, isFallback = true)]
+    public sealed class ScriptableObjectEditor : SweetJellyEditor
+    {
+        public override UnityEngine.UIElements.VisualElement CreateInspectorGUI() => NativeInspector.Create(this);
+    }
 
     public class SweetJellyEditor : UnityEditor.Editor
     {
@@ -40,6 +46,7 @@ namespace SWeetJelly.Editor
         {
             EditorCustomStyles.CheckStyles();
 
+            if (target == null) return;
             Type targetType = target.GetType();
 
             foldouts = new Dictionary<string, EditorFoldoutBool>();
@@ -53,6 +60,13 @@ namespace SWeetJelly.Editor
             // Cache nested classes
             nestedClassTypes = PropertyUtility.GetClassNestedTypes(targetType);
 
+            if (GetType() == typeof(MonoBehaviourEditor) || GetType() == typeof(ScriptableObjectEditor)) return;
+
+            CacheLegacyRenderers();
+        }
+
+        private void CacheLegacyRenderers()
+        {
             SerializedProperty propertiesIterator = serializedObject.GetIterator();
 
             List<GUIRenderer> enumerableRenderers = CacheGUIRenderers(propertiesIterator);
@@ -88,6 +102,8 @@ namespace SWeetJelly.Editor
 
         public override void OnInspectorGUI()
         {
+            if (target == null) return;
+            if (renderers == null && editorTabs == null) CacheLegacyRenderers();
             if (showScriptField)
             {
                 if (scriptProperty != null)
@@ -143,6 +159,12 @@ namespace SWeetJelly.Editor
 
             object nestedObject = baseFieldInfo.GetValue(targetObject);
 
+            if (nestedObject == null)
+            {
+                renderers.Add(new SerializedPropertyGUIRenderer(this, serializedObject.FindProperty(serializedProperty.propertyPath), baseFieldInfo, targetObject, PropertyUtility.GetClassNestedTypes(targetObject.GetType())));
+                return;
+            }
+
             List<Type> nestedTypes = PropertyUtility.GetClassNestedTypes(nestedObject.GetType());
 
             SerializedProperty nestedProperty = serializedProperty.Copy();
@@ -163,7 +185,7 @@ namespace SWeetJelly.Editor
                 if (propertyDepth != nestedProperty.depth)
                     continue;
 
-                FieldInfo propertyField = nestedObject.GetType().GetField(nestedProperty.name, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+                FieldInfo propertyField = InspectorReflection.ResolveField(target.GetType(), nestedProperty.propertyPath);
 
                 if (nestedProperty.propertyType == SerializedPropertyType.Generic)
                 {
@@ -185,11 +207,11 @@ namespace SWeetJelly.Editor
                 IEnumerable<ButtonAttribute> buttonAttributes = method.GetCustomAttributes<ButtonAttribute>(false);
                 foreach (ButtonAttribute buttonAttribute in buttonAttributes)
                 {
-                    nestedRenderers.Add(new MethodGUIRenderer(this, method, nestedObject, buttonAttribute));
+                    nestedRenderers.Add(new MethodGUIRenderer(this, method, nestedObject, buttonAttribute, serializedProperty.propertyPath));
                 }
             }
 
-            renderers.Add(new UnwrapNestedGUIRenderer(this, baseFieldInfo, PropertyUtility.GroupRenderers(this, nestedRenderers), targetObject, PropertyUtility.GetClassNestedTypes(targetObject.GetType())));
+            renderers.Add(new UnwrapNestedGUIRenderer(this, baseFieldInfo, PropertyUtility.GroupRenderers(this, nestedRenderers), targetObject, PropertyUtility.GetClassNestedTypes(targetObject.GetType()), serializedProperty.propertyPath));
         }
 
         private List<GUIRenderer> CacheGUIRenderers(SerializedProperty serializedProperty, SerializedProperty endProperty = null)

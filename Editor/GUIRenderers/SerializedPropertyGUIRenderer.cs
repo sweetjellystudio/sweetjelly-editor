@@ -1,222 +1,123 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using SWeetJelly.Editor.Attributes;
 using UnityEditor;
 using UnityEngine;
-using System.Collections.Generic;
-using SWeetJelly.Editor.Attributes;
 
 namespace SWeetJelly.Editor
 {
     public sealed class SerializedPropertyGUIRenderer : GUIRenderer
     {
-        private FieldInfo fieldInfo;
-        private object targetObject;
-
-        private SerializedProperty serializedProperty;
-        private GUIContent labelContent;
-
-        private SweetJellyEditor editor;
-
-        private PropertyConditionDrawer propertyCondition;
-
-        private List<Type> nestedTypes;
+        private readonly SweetJellyEditor editor;
+        private readonly SerializedProperty property;
+        private readonly FieldInfo field;
+        private readonly GUIContent label;
+        private readonly HashSet<string> diagnostics = new HashSet<string>();
+        private bool conditionEnabled = true;
 
         public SerializedPropertyGUIRenderer(SweetJellyEditor editor, SerializedProperty serializedProperty, FieldInfo fieldInfo, object targetObject, List<Type> nestedTypes)
         {
-            this.editor = editor;
-            this.serializedProperty = serializedProperty;
-            this.targetObject = targetObject;
-            this.fieldInfo = fieldInfo;
-            this.nestedTypes = nestedTypes;
+            this.editor = editor; property = serializedProperty; field = fieldInfo;
+            TabAttribute = PropertyUtility.GetAttribute<TabAttribute>(field);
+            GroupAttribute = PropertyUtility.GetAttribute<GroupAttribute>(field);
+            Order = PropertyUtility.GetAttribute<OrderAttribute>(field)?.Order ?? 0;
+            label = new GUIContent(PropertyUtility.GetAttribute<LabelAttribute>(field)?.Label ?? property.displayName);
+            Refresh();
+        }
 
-            TabAttribute = PropertyUtility.GetAttribute<TabAttribute>(fieldInfo);
-            GroupAttribute = PropertyUtility.GetAttribute<GroupAttribute>(fieldInfo);
+        private void Report(Exception exception)
+        {
+            exception = InspectorReflection.Unwrap(exception);
+            if (diagnostics.Add(exception.GetType().Name + ":" + exception.Message)) Debug.LogException(exception, editor.target);
+        }
 
-            OrderAttribute orderAttribute = PropertyUtility.GetAttribute<OrderAttribute>(fieldInfo);
-            if (orderAttribute != null)
+        private bool Evaluate(Func<object, bool> condition, bool visibility)
+        {
+            try
             {
-                Order = orderAttribute.Order;
+                var results = editor.targets.Select(root => condition(InspectorReflection.Owner(root, property.propertyPath))).ToArray();
+                bool mixed = results.Any(value => value != results[0]);
+                if (mixed) { conditionEnabled = false; return visibility; }
+                return results[0];
             }
+            catch (Exception exception) { Report(exception); conditionEnabled = false; return visibility; }
+        }
 
-            string label = serializedProperty.displayName;
-
-            LabelAttribute labelAttribute = PropertyUtility.GetAttribute<LabelAttribute>(fieldInfo);
-            if (labelAttribute != null)
+        private void Refresh()
+        {
+            conditionEnabled = true;
+            IsVisible = true;
+            var condition = PropertyUtility.GetAttribute<ConditionAttribute>(field);
+            if (condition is HideAttribute) IsVisible = false;
+            else if (condition is ShowIfAttribute show) IsVisible = Evaluate(owner => InspectorReflection.Condition(owner, show.ConditionName), true);
+            else if (condition is HideIfAttribute hide) IsVisible = Evaluate(owner => !InspectorReflection.Condition(owner, hide.ConditionName), true);
+            else if (condition != null)
             {
-                label = labelAttribute.Label;
-            }
-
-            labelContent = new GUIContent(label);
-
-            // Check if visible
-            ConditionAttribute showIfAttribute = PropertyUtility.GetAttribute<ConditionAttribute>(fieldInfo);
-
-            if (showIfAttribute != null)
-            {
-                propertyCondition = CustomAttributesDatabase.GetConditionAttribute(showIfAttribute.GetType());
-
-                UpdateVisibilityState();
+                var drawer = CustomAttributesDatabase.GetConditionAttribute(condition.GetType());
+                if (drawer != null) IsVisible = Evaluate(owner => drawer.CanBeDrawn(editor, field, owner, PropertyUtility.GetClassNestedTypes(owner.GetType())), true);
+                else { conditionEnabled = false; Report(new InvalidOperationException("No condition drawer for " + condition.GetType().Name)); }
             }
         }
 
         public bool IsEnabled()
         {
-            ReadOnlyAttribute readOnlyAttribute = PropertyUtility.GetAttribute<ReadOnlyAttribute>(fieldInfo);
-            if (readOnlyAttribute != null)
-            {
-                return false;
-            }
-
-            DisableIfAttribute disableIfAttribute = PropertyUtility.GetAttribute<DisableIfAttribute>(fieldInfo);
-            if(disableIfAttribute != null)
-            {
-                string methodName = disableIfAttribute.ConditionName;
-                if(!string.IsNullOrEmpty(methodName))
-                {
-                    foreach(Type type in nestedTypes)
-                    {
-                        FieldInfo conditionField = type.GetField(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (conditionField != null && conditionField.FieldType == PropertyUtility.TYPE_BOOL)
-                        {
-                            return !(bool)conditionField.GetValue(targetObject);
-                        }
-
-                        PropertyInfo propertyInfo = type.GetProperty(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (propertyInfo != null && propertyInfo.PropertyType == PropertyUtility.TYPE_BOOL)
-                        {
-                            return !(bool)propertyInfo.GetValue(targetObject);
-                        }
-
-                        MethodInfo conditionMethod = type.GetMethod(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (conditionMethod != null && conditionMethod.ReturnType == PropertyUtility.TYPE_BOOL && conditionMethod.GetParameters().Length == 0)
-                        {
-                            return !(bool)conditionMethod.Invoke(targetObject, null);
-                        }
-                    }
-                }
-            }
-
-            EnableIfAttribute enableIfAttribute = PropertyUtility.GetAttribute<EnableIfAttribute>(fieldInfo);
-            if (enableIfAttribute != null)
-            {
-                string methodName = enableIfAttribute.ConditionName;
-                if (!string.IsNullOrEmpty(methodName))
-                {
-                    foreach (Type type in nestedTypes)
-                    {
-                        FieldInfo conditionField = type.GetField(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (conditionField != null && conditionField.FieldType == PropertyUtility.TYPE_BOOL)
-                        {
-                            return (bool)conditionField.GetValue(targetObject);
-                        }
-
-                        PropertyInfo propertyInfo = type.GetProperty(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (propertyInfo != null && propertyInfo.PropertyType == PropertyUtility.TYPE_BOOL)
-                        {
-                            return (bool)propertyInfo.GetValue(targetObject);
-                        }
-
-                        MethodInfo conditionMethod = type.GetMethod(methodName, ReflectionUtils.FLAGS_INSTANCE);
-                        if (conditionMethod != null && conditionMethod.ReturnType == PropertyUtility.TYPE_BOOL && conditionMethod.GetParameters().Length == 0)
-                        {
-                            return (bool)conditionMethod.Invoke(targetObject, null);
-                        }
-                    }
-                }
-            }
-
-            return true;
+            if (PropertyUtility.GetAttribute<ReadOnlyAttribute>(field) != null) return false;
+            var enable = PropertyUtility.GetAttribute<EnableIfAttribute>(field);
+            var disable = PropertyUtility.GetAttribute<DisableIfAttribute>(field);
+            bool allowed = true;
+            if (enable != null) allowed &= Evaluate(owner => InspectorReflection.Condition(owner, enable.ConditionName), false);
+            if (disable != null) allowed &= Evaluate(owner => !InspectorReflection.Condition(owner, disable.ConditionName), false);
+            return allowed && conditionEnabled;
         }
 
-        public override void OnGUIChanged()
-        {
-            UpdateVisibilityState();
-        }
-
-        private void UpdateVisibilityState()
-        {
-            if(propertyCondition != null)
-            {
-                // Check if visible
-                IsVisible = propertyCondition.CanBeDrawn(editor, fieldInfo, targetObject, nestedTypes);
-            }
-        }
+        public override void OnGUIChanged() { Refresh(); }
 
         public override void OnGUI()
         {
+            Refresh();
             if (!IsVisible) return;
-
-            IndentAttribute indentAttribute = PropertyUtility.GetAttribute<IndentAttribute>(fieldInfo);
-
-            EditorGUILayout.BeginHorizontal();
-
-            if (indentAttribute != null)
-                GUILayout.Space(indentAttribute.Space);
-
-            EditorGUILayout.BeginVertical();
-
-            // Check if enabled and draw
-            EditorGUI.BeginChangeCheck();
-            bool enabled = IsEnabled();
-
-            using (new EditorGUI.DisabledScope(disabled: !enabled))
+            var callback = PropertyUtility.GetAttribute<OnValueChangedAttribute>(field);
+            var snapshots = callback == null ? null : editor.targets.Select(root => new SerializedObject(root)).ToArray();
+            try
             {
-                LabelWidthAttribute labelWidthAttribute = PropertyUtility.GetAttribute<LabelWidthAttribute>(fieldInfo);
-                if (labelWidthAttribute != null)
+                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUI.DisabledScope(!IsEnabled()))
                 {
-                    using (new LabelWidthScope(labelWidthAttribute.Width))
+                    var indent = PropertyUtility.GetAttribute<IndentAttribute>(field);
+                    if (indent != null) GUILayout.Space(indent.Space);
+                    EditorGUI.BeginChangeCheck();
+                    var width = PropertyUtility.GetAttribute<LabelWidthAttribute>(field);
+                    if (width != null)
                     {
-                        EditorGUILayout.PropertyField(serializedProperty, labelContent, true);
+                        using (new LabelWidthScope(width.Width)) EditorGUILayout.PropertyField(property, label, true);
                     }
-                }
-                else
-                {
-                    EditorGUILayout.PropertyField(serializedProperty, labelContent, true);
+                    else EditorGUILayout.PropertyField(property, label, true);
+                    bool changed = EditorGUI.EndChangeCheck();
+                    if (changed && callback != null)
+                    {
+                        property.serializedObject.ApplyModifiedProperties();
+                        var changedTargets = new List<UnityEngine.Object>();
+                        for (int i = 0; i < snapshots.Length; i++)
+                        {
+                            using (var fresh = new SerializedObject(editor.targets[i]))
+                                if (!SerializedProperty.DataEquals(snapshots[i].FindProperty(property.propertyPath), fresh.FindProperty(property.propertyPath))) changedTargets.Add(editor.targets[i]);
+                        }
+                        if (changedTargets.Count > 0) Invoke(changedTargets.ToArray(), callback.CallbackName, true);
+                    }
+                    var inline = PropertyUtility.GetAttribute<InlineButtonAttribute>(field);
+                    if (inline != null && GUILayout.Button(inline.Title, EditorCustomStyles.ButtonMini)) Invoke(editor.targets, inline.MethodName, false);
                 }
             }
+            finally { if (snapshots != null) foreach (var snapshot in snapshots) snapshot.Dispose(); }
+        }
 
-            // Call OnValueChanged callbacks
-            if (EditorGUI.EndChangeCheck())
-            {
-                OnValueChangedAttribute onValueChangedAttribute = PropertyUtility.GetAttribute<OnValueChangedAttribute>(fieldInfo);
-                if (onValueChangedAttribute != null)
-                {
-                    MethodInfo callbackMethod = targetObject.GetType().GetMethod(onValueChangedAttribute.CallbackName, ReflectionUtils.FLAGS_INSTANCE);
-                    if (callbackMethod != null && callbackMethod.ReturnType == typeof(void) && callbackMethod.GetParameters().Length == 0)
-                    {
-                        serializedProperty.serializedObject.ApplyModifiedProperties();
-
-                        callbackMethod.Invoke(targetObject, null);
-                    }
-                    else
-                    {
-                        string warning = onValueChangedAttribute.GetType().Name + " can invoke only action methods - with void return type and no parameters";
-
-                        Debug.LogWarning(warning);
-                    }
-                }
-            }
-
-            EditorGUILayout.EndVertical();
-
-            InlineButtonAttribute inlineButtonAttribute = PropertyUtility.GetAttribute<InlineButtonAttribute>(fieldInfo);
-            if (inlineButtonAttribute != null)
-            {
-                GUIStyle buttonStyle = EditorCustomStyles.ButtonMini;
-                GUIContent buttonContent = new GUIContent(inlineButtonAttribute.Title);
-                float buttonWidth = buttonStyle.CalcSize(buttonContent).x;
-
-                if (GUILayout.Button(buttonContent, buttonStyle, GUILayout.Width(buttonWidth)))
-                {
-                    MethodInfo conditionMethod = targetObject.GetType().GetMethod(inlineButtonAttribute.MethodName, ReflectionUtils.FLAGS_INSTANCE);
-                    if (conditionMethod != null && conditionMethod.GetParameters().Length == 0)
-                    {
-                        conditionMethod.Invoke(targetObject, null);
-                    }
-                }
-            }
-
-            EditorGUILayout.EndHorizontal();
+        private void Invoke(UnityEngine.Object[] targets, string name, bool requireVoid)
+        {
+            try { InspectorReflection.Invoke(targets, property.propertyPath, name, null, requireVoid); }
+            catch (Exception exception) { Report(exception); }
+            finally { property.serializedObject.Update(); }
         }
     }
 }

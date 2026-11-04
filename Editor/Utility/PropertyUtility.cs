@@ -78,18 +78,9 @@ namespace SWeetJelly.Editor
 
         public static T[] GetAttributes<T>(SerializedProperty property) where T : Attribute
         {
-            Type targetType = GetTargetObject(property).GetType();
-
-            foreach(Type type in GetClassNestedTypes(targetType))
-            {
-                FieldInfo fieldInfo = targetType.GetField(property.name, ReflectionUtils.FLAGS_INSTANCE);
-
-                if(fieldInfo != null)
-                    return (T[])fieldInfo.GetCustomAttributes(typeof(T), true);
-
-            }
-
-            return null;
+            if (property == null || property.serializedObject.targetObject == null) return null;
+            var field = InspectorReflection.ResolveField(property.serializedObject.targetObject.GetType(), property.propertyPath);
+            return field?.GetCustomAttributes<T>(true).ToArray();
         }
 
         public static UnityEngine.Object GetTargetObject(SerializedProperty property)

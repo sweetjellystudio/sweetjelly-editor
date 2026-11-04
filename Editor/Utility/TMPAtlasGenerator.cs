@@ -1,4 +1,6 @@
+using System;
 using System.Collections;
+using Object = UnityEngine.Object;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,6 +15,7 @@ namespace SWeetJelly.Editor
 {
     public class TMPAtlasGenerator
     {
+        internal static System.Func<string, string, string, string, bool> Confirm = EditorUtility.DisplayDialog;
         private const string FILE_PATH_SAVE = "atlas_generator_file_path";
         private List<SpriteData> elements;
 
@@ -32,10 +35,16 @@ namespace SWeetJelly.Editor
 
         public void Save()
         {
+            Validate(elements, filePath);
+            if (EditorSettings.spritePackerMode != SpritePackerMode.SpriteAtlasV2)
+                throw new InvalidOperationException("Enable Sprite Atlas V2 in Project Settings > Editor > Sprite Packer before generating a TMP atlas.");
             SpriteAtlasAsset spriteAtlasAsset = new SpriteAtlasAsset();
-            spriteAtlasAsset.Add(elements.Select(x => (Object)x.Sprite).ToArray());
-
-            SpriteAtlasAsset.Save(spriteAtlasAsset, filePath);
+            try
+            {
+                spriteAtlasAsset.Add(elements.Select(x => (Object)x.Sprite).ToArray());
+                SpriteAtlasAsset.Save(spriteAtlasAsset, filePath);
+            }
+            finally { Object.DestroyImmediate(spriteAtlasAsset); }
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -49,6 +58,10 @@ namespace SWeetJelly.Editor
 
             spriteAtlasImporter.SaveAndReimport();
 
+            var importedAtlas = AssetDatabase.LoadAssetAtPath<SpriteAtlas>(filePath);
+            if (importedAtlas != null)
+                SpriteAtlasUtility.PackAtlases(new[] { importedAtlas }, EditorUserBuildSettings.activeBuildTarget);
+
             AssetDatabase.Refresh();
         }
 
@@ -56,8 +69,11 @@ namespace SWeetJelly.Editor
         {
             SpriteAtlas spriteAtlas = null;
 
+            double deadline = EditorApplication.timeSinceStartup + 30;
             do
             {
+                if (EditorApplication.timeSinceStartup >= deadline)
+                    throw new TimeoutException("Sprite atlas import did not complete within 30 seconds: " + filePath);
                 yield return null;
 
                 spriteAtlas = AssetDatabase.LoadAssetAtPath<SpriteAtlas>(filePath);
@@ -74,16 +90,17 @@ namespace SWeetJelly.Editor
 
         public void CreateSpriteAsset(SpriteAtlas spriteAtlas)
         {
-            // Get the path to the selected asset.
-            string fileNameWithExtension = Path.GetFileName(this.filePath);
-            string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(this.filePath);
-            string filePath = this.filePath.Replace(fileNameWithExtension, "");
-
-            // Create new Sprite Asset
-            TMP_SpriteAsset spriteAsset = ScriptableObject.CreateInstance<TMP_SpriteAsset>();
-            AssetDatabase.CreateAsset(spriteAsset, filePath + fileNameWithoutExtension + ".asset");
-
-            ReflectionUtils.InjectInstanceComponent(spriteAsset, "m_Version", "1.1.0");
+            Validate(elements, filePath);
+            if (spriteAtlas == null || spriteAtlas.spriteCount == 0)
+                throw new InvalidOperationException("The imported sprite atlas is empty.");
+            string assetPath = Path.ChangeExtension(filePath, ".asset").Replace('\\', '/');
+            var existing = AssetDatabase.LoadMainAssetAtPath(assetPath);
+            if (existing != null && !(existing is TMP_SpriteAsset))
+                throw new InvalidOperationException("The output path contains a different asset type: " + assetPath);
+            TMP_SpriteAsset spriteAsset = existing as TMP_SpriteAsset;
+            bool create = spriteAsset == null;
+            if (create) spriteAsset = ScriptableObject.CreateInstance<TMP_SpriteAsset>();
+            spriteAsset.name = Path.GetFileNameWithoutExtension(assetPath);
 
             // Compute the hash code for the sprite asset.
             spriteAsset.hashCode = TMP_TextUtilities.GetSimpleHashCode(spriteAsset.name);
@@ -101,7 +118,7 @@ namespace SWeetJelly.Editor
             for (int i = 0; i < sprites.Length; i++)
             {
                 Sprite sprite = sprites[i];
-                string realName = sprite.name.Substring(0, sprite.name.Length - 7);
+                string realName = sprite.name.EndsWith("(Clone)", StringComparison.Ordinal) ? sprite.name.Substring(0, sprite.name.Length - 7) : sprite.name;
                 SpriteData linkedElement = GetAtlasElement(realName);
 
                 TMP_SpriteGlyph spriteGlyph = new TMP_SpriteGlyph();
@@ -119,7 +136,8 @@ namespace SWeetJelly.Editor
                 }
 
                 spriteGlyph.glyphRect = new GlyphRect(sprite.textureRect);
-                spriteGlyph.sprite = sprite;
+                // Atlas.GetSprites returns transient clones; keep the serialized source Sprite reference stable.
+                spriteGlyph.sprite = linkedElement != null ? linkedElement.Sprite : sprite;
                 spriteGlyphTable.Add(spriteGlyph);
 
                 TMP_SpriteCharacter spriteCharacter = new TMP_SpriteCharacter(0xFFFE, spriteGlyph);
@@ -138,10 +156,30 @@ namespace SWeetJelly.Editor
                 spriteCharacterTable.Add(spriteCharacter);
             }
 
-            ReflectionUtils.InjectInstanceComponent(spriteAsset, "m_SpriteCharacterTable", spriteCharacterTable);
-            ReflectionUtils.InjectInstanceComponent(spriteAsset, "m_SpriteGlyphTable", spriteGlyphTable);
+            if (sprites.Select(sprite => sprite.texture).Distinct().Count() != 1)
+            {
+                if (create) Object.DestroyImmediate(spriteAsset);
+                throw new InvalidOperationException("TMP sprite assets require a single atlas texture page.");
+            }
+            if (Shader.Find("TextMeshPro/Sprite") == null)
+            {
+                if (create) Object.DestroyImmediate(spriteAsset);
+                throw new InvalidOperationException("Import TMP essential resources before generating a sprite asset.");
+            }
+            if (create) AssetDatabase.CreateAsset(spriteAsset, assetPath);
+            Undo.RecordObject(spriteAsset, "Update TMP Sprite Asset");
+            spriteAsset.spriteCharacterTable.Clear();
+            spriteAsset.spriteCharacterTable.AddRange(spriteCharacterTable);
+            spriteAsset.spriteGlyphTable.Clear();
+            spriteAsset.spriteGlyphTable.AddRange(spriteGlyphTable);
+            using (var serialized = new SerializedObject(spriteAsset))
+            {
+                var version = serialized.FindProperty("m_Version");
+                if (version != null) version.stringValue = "1.1.0";
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+            }
 
-            spriteAsset.spriteSheet = spriteGlyphTable[0].sprite.texture;
+            spriteAsset.spriteSheet = sprites[0].texture;
 
             // Add new default material for sprite asset.
             AddDefaultMaterial(spriteAsset);
@@ -155,17 +193,23 @@ namespace SWeetJelly.Editor
             AssetDatabase.SaveAssets();
 
             AssetDatabase.ImportAsset(AssetDatabase.GetAssetPath(spriteAsset));
+            foreach (var sprite in sprites)
+                if (sprite != null && !EditorUtility.IsPersistent(sprite)) Object.DestroyImmediate(sprite);
         }
 
         private void AddDefaultMaterial(TMP_SpriteAsset spriteAsset)
         {
             UnityEngine.Shader shader = UnityEngine.Shader.Find("TextMeshPro/Sprite");
-            Material material = new Material(shader);
+            Material material = spriteAsset.material;
+            bool create = material == null || AssetDatabase.GetAssetPath(material) != AssetDatabase.GetAssetPath(spriteAsset);
+            if (create) material = new Material(shader) { name = spriteAsset.name + " Material" };
+            else Undo.RecordObject(material, "Update TMP Sprite Material");
             material.SetTexture(ShaderUtilities.ID_MainTex, spriteAsset.spriteSheet);
 
             spriteAsset.material = material;
             material.hideFlags = HideFlags.HideInHierarchy;
-            AssetDatabase.AddObjectToAsset(material, spriteAsset);
+            if (create) AssetDatabase.AddObjectToAsset(material, spriteAsset);
+            EditorUtility.SetDirty(material);
         }
 
         private SpriteData GetAtlasElement(string spriteName)
@@ -206,33 +250,30 @@ namespace SWeetJelly.Editor
 
                 if (string.IsNullOrEmpty(filePath))
                 {
-                    Debug.LogError("[Atlas Generator]: Path can't be empty!");
-
                     yield break;
                 }
 
                 EditorPrefs.SetString(FILE_PATH_SAVE, Path.GetDirectoryName(filePath));
             }
 
-            if (atlasElements.IsNullOrEmpty())
+            Validate(atlasElements, filePath);
+            elements = atlasElements.Select(item => new SpriteData(item.Sprite, item.Name)
+            { OverrideDataSet = item.OverrideDataSet, GlyphMetrics = item.GlyphMetrics, Scale = item.Scale }).ToList();
+            bool atlasExisted = File.Exists(filePath);
+            string outputPath = Path.ChangeExtension(filePath, ".asset").Replace('\\', '/');
+            bool assetExisted = File.Exists(outputPath);
+            bool complete = false;
+            if (!activePaths.Add(filePath)) throw new InvalidOperationException("Atlas generation is already running: " + filePath);
+            try
             {
-                Debug.LogError("[Atlas Generator]: Sprites list is empty!");
-
-                yield break;
-            }
-
-            for (int i = 0; i < atlasElements.Count; i++)
-            {
-                elements.Add(atlasElements[i]);
-            }
 
             //Handle possible override
             if (!string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(filePath, AssetPathToGUIDOptions.OnlyExistingAssets)))
             {
-                string TMP_AssetFilePath = filePath.Replace(".spriteatlasv2", ".asset");
+                string TMP_AssetFilePath = Path.ChangeExtension(filePath, ".asset");
                 TMP_SpriteAsset TMP_AssetFile = AssetDatabase.LoadAssetAtPath<TMP_SpriteAsset>(TMP_AssetFilePath);
 
-                if ((TMP_AssetFile != null) && (EditorUtility.DisplayDialog("Asset override", "Do you want to copy sprite GlyphMetrics and scale from overriden asset?", "Yes", "No")))
+                if ((TMP_AssetFile != null) && (Confirm("Asset override", "Do you want to copy sprite GlyphMetrics and scale from overriden asset?", "Yes", "No")))
                 {
                     for (int i = 0; i < TMP_AssetFile.spriteCharacterTable.Count; i++)
                     {
@@ -263,9 +304,7 @@ namespace SWeetJelly.Editor
             SpriteAtlas spriteAtlas = spriteAtlasEnumerator.Current;
             if (spriteAtlas == null)
             {
-                Debug.LogError("[Currencies]: Failed to create Sprite Atlas!");
-
-                yield break;
+                throw new InvalidOperationException("Failed to create sprite atlas: " + filePath);
             }
 
             EditorUtility.SetDirty(spriteAtlas);
@@ -274,20 +313,22 @@ namespace SWeetJelly.Editor
 
             CreateSpriteAsset(spriteAtlas);
 
+            complete = true;
+
             //Applying Ref to TMP settings
             TMP_Settings settings = EditorUtils.GetAsset<TMP_Settings>();
 
             if (settings != null)
             {
 
-                if (EditorUtility.DisplayDialog("Linking asset to TMP Settings", "Do you want to add created \"Sprite Atlas\" to \"TMP Settings\"?", "Yes", "Cancel"))
+                if (Confirm("Linking asset to TMP Settings", "Do you want to add created \"Sprite Atlas\" to \"TMP Settings\"?", "Yes", "Cancel"))
                 {
                     SerializedObject settingsSerializedObject = new SerializedObject(settings);
                     SerializedProperty defaultAssetProperty = settingsSerializedObject.FindProperty("m_defaultSpriteAsset");
-                    string TMP_AssetFilePath = filePath.Replace(".spriteatlasv2", ".asset");
+                    string TMP_AssetFilePath = Path.ChangeExtension(filePath, ".asset");
                     TMP_SpriteAsset TMP_AssetFile = AssetDatabase.LoadAssetAtPath<TMP_SpriteAsset>(TMP_AssetFilePath);
 
-                    if ((defaultAssetProperty.objectReferenceValue == null) || EditorUtility.DisplayDialog("Linking asset to TMP Settings", "Do you want to override \"Default Sprite Asset\" reference with created \"Sprite Atlas\" or add reference to fallback list of current \"Default Sprite Asset\" ?", "Override", "Add to fallback list"))
+                    if ((defaultAssetProperty.objectReferenceValue == null) || Confirm("Linking asset to TMP Settings", "Do you want to override \"Default Sprite Asset\" reference with created \"Sprite Atlas\" or add reference to fallback list of current \"Default Sprite Asset\" ?", "Override", "Add to fallback list"))
                     {
                         defaultAssetProperty.objectReferenceValue = TMP_AssetFile;
                         settingsSerializedObject.ApplyModifiedProperties();
@@ -296,12 +337,48 @@ namespace SWeetJelly.Editor
                     {
                         SerializedObject spriteAssetSerializedObject = new SerializedObject(defaultAssetProperty.objectReferenceValue);
                         SerializedProperty fallbackAssetsProperty = spriteAssetSerializedObject.FindProperty("fallbackSpriteAssets");
+                        for (int i = 0; i < fallbackAssetsProperty.arraySize; i++)
+                            if (fallbackAssetsProperty.GetArrayElementAtIndex(i).objectReferenceValue == TMP_AssetFile) yield break;
                         fallbackAssetsProperty.arraySize++;
                         fallbackAssetsProperty.GetArrayElementAtIndex(fallbackAssetsProperty.arraySize - 1).objectReferenceValue = TMP_AssetFile;
                         spriteAssetSerializedObject.ApplyModifiedProperties();
                     }
                 }
             }
+                    }
+            finally
+            {
+                activePaths.Remove(filePath);
+                if (!complete)
+                {
+                    if (!assetExisted) AssetDatabase.DeleteAsset(outputPath);
+                    if (!atlasExisted) AssetDatabase.DeleteAsset(filePath);
+                }
+            }
+        }
+
+        private static readonly HashSet<string> activePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        private static void Validate(IList<SpriteData> input, string path)
+        {
+            if (input == null || input.Count == 0) throw new ArgumentException("Provide at least one sprite.", nameof(input));
+            if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("Assets/", StringComparison.Ordinal) ||
+                path.Contains("\\") || path.Split('/').Any(segment => segment == ".." || segment == ".") ||
+                !path.EndsWith(".spriteatlasv2", StringComparison.OrdinalIgnoreCase) || !Directory.Exists(Path.GetDirectoryName(path)))
+                throw new ArgumentException("Save the .spriteatlasv2 inside an existing Assets folder.", nameof(path));
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            var sprites = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in input)
+            {
+                if (item == null || item.Sprite == null || string.IsNullOrWhiteSpace(item.Name))
+                    throw new ArgumentException("Every sprite entry needs a sprite and non-empty name.", nameof(input));
+                if (!names.Add(item.Name) || !sprites.Add(item.Sprite.name))
+                    throw new ArgumentException("Sprite names and output character names must be unique.", nameof(input));
+                if (!AssetDatabase.Contains(item.Sprite)) throw new ArgumentException("Sprites must be imported project assets.", nameof(input));
+            }
+            string output = Path.ChangeExtension(path, ".asset");
+            var existing = AssetDatabase.LoadMainAssetAtPath(output);
+            if (existing != null && !(existing is TMP_SpriteAsset)) throw new ArgumentException("The TMP output path contains another asset type.", nameof(path));
         }
 
         public class SpriteData

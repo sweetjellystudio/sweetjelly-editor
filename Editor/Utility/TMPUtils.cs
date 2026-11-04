@@ -16,7 +16,7 @@ namespace SWeetJelly.Editor
             foreach (var selectedObject in selectedObjects)
             {
                 var text = selectedObject.GetComponent<Text>();
-                if (!text) return false;
+                if (!text || EditorUtility.IsPersistent(selectedObject) || selectedObject.GetComponent<TextMeshProUGUI>()) return false;
             }
 
             return true;
@@ -26,22 +26,29 @@ namespace SWeetJelly.Editor
         private static void ReplaceSelectedObjects()
         {
             var selectedObjects = Selection.gameObjects;
-            Undo.RecordObjects(selectedObjects, "Replace Text Component with Text Mesh Pro Component");
+            if (!TextSelectedValidation())
+                throw new System.InvalidOperationException("Select scene objects with legacy Text and no TMP component.");
+            Undo.IncrementCurrentGroup();
+            int undoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("Replace Text Components With Text Mesh Pro");
+            try
+            {
 
             foreach (var selectedObject in selectedObjects)
             {
                 var textComp = selectedObject.GetComponent<Text>();
                 var textSizeDelta = textComp.rectTransform.sizeDelta;
-                //text component is still alive in memory, so the settings are still intact
+                var saved = new TextState(textComp);
+                Undo.RecordObject(textComp.rectTransform, "Preserve Text Layout");
                 Undo.DestroyObjectImmediate(textComp);
 
                 var tmp = Undo.AddComponent<TextMeshProUGUI>(selectedObject);
 
-                tmp.text = textComp.text;
+                tmp.text = saved.text;
 
-                tmp.fontSize = textComp.fontSize;
+                tmp.fontSize = saved.fontSize;
 
-                var fontStyle = textComp.fontStyle;
+                var fontStyle = saved.fontStyle;
                 switch (fontStyle)
                 {
                     case FontStyle.Normal:
@@ -58,11 +65,11 @@ namespace SWeetJelly.Editor
                         break;
                 }
 
-                tmp.enableAutoSizing = textComp.resizeTextForBestFit;
-                tmp.fontSizeMin = textComp.resizeTextMinSize;
-                tmp.fontSizeMax = textComp.resizeTextMaxSize;
+                tmp.enableAutoSizing = saved.resizeTextForBestFit;
+                tmp.fontSizeMin = saved.resizeTextMinSize;
+                tmp.fontSizeMax = saved.resizeTextMaxSize;
 
-                var alignment = textComp.alignment;
+                var alignment = saved.alignment;
                 switch (alignment)
                 {
                     case TextAnchor.UpperLeft:
@@ -94,13 +101,41 @@ namespace SWeetJelly.Editor
                         break;
                 }
 
-                tmp.enableWordWrapping = textComp.horizontalOverflow == HorizontalWrapMode.Wrap;
+                tmp.textWrappingMode = saved.horizontalOverflow == HorizontalWrapMode.Wrap ? TextWrappingModes.Normal : TextWrappingModes.NoWrap;
 
-                tmp.color = textComp.color;
-                tmp.raycastTarget = textComp.raycastTarget;
-                tmp.richText = textComp.supportRichText;
+                tmp.color = saved.color;
+                tmp.raycastTarget = saved.raycastTarget;
+                tmp.richText = saved.supportRichText;
 
                 tmp.rectTransform.sizeDelta = textSizeDelta;
+                PrefabUtility.RecordPrefabInstancePropertyModifications(tmp);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(tmp.rectTransform);
+            }
+            Undo.CollapseUndoOperations(undoGroup);
+            }
+            catch
+            {
+                Undo.RevertAllDownToGroup(undoGroup);
+                throw;
+            }
+        }
+
+        private sealed class TextState
+        {
+            internal string text;
+            internal int fontSize, resizeTextMinSize, resizeTextMaxSize;
+            internal FontStyle fontStyle;
+            internal bool resizeTextForBestFit, raycastTarget, supportRichText;
+            internal TextAnchor alignment;
+            internal HorizontalWrapMode horizontalOverflow;
+            internal Color color;
+            internal TextState(Text source)
+            {
+                text = source.text; fontSize = source.fontSize; fontStyle = source.fontStyle;
+                resizeTextForBestFit = source.resizeTextForBestFit;
+                resizeTextMinSize = source.resizeTextMinSize; resizeTextMaxSize = source.resizeTextMaxSize;
+                alignment = source.alignment; horizontalOverflow = source.horizontalOverflow;
+                color = source.color; raycastTarget = source.raycastTarget; supportRichText = source.supportRichText;
             }
         }
     }

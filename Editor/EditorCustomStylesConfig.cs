@@ -44,9 +44,9 @@ namespace SWeetJelly.Editor
 
         public Texture2D GetIcon(string name)
         {
-            for(int i = 0; i < icons.Length; i++)
+            for(int i = 0; icons != null && i < icons.Length; i++)
             {
-                if (icons[i].name == name)
+                if (icons[i] != null && icons[i].name == name)
                     return icons[i];
             }
 
