@@ -73,13 +73,22 @@ namespace SWeetJelly.Editor
 
         static EditorCustomStyles()
         {
+            EditorApplication.projectChanged += Invalidate;
             LoadStylesData();
+        }
+
+        private static void Invalidate()
+        {
+            editorCustomStylesConfig = null;
+            stylesLoadAttempt = 0;
+            ScheduleLoadStylesData();
         }
 
         public static void CheckStyles()
         {
-            if (editorCustomStylesConfig == null)
+            if (editorCustomStylesConfig == null || guiSkin != editorCustomStylesConfig.Skin)
             {
+                editorCustomStylesConfig = null;
                 LoadStylesData();
             }
         }
@@ -87,7 +96,9 @@ namespace SWeetJelly.Editor
         private static EditorCustomStylesConfig LoadProjectConfig()
         {
             return AssetDatabase.LoadAssetAtPath<EditorCustomStylesConfig>(
-                ProjectConfigAssetPath);
+                ProjectConfigAssetPath)
+                ?? AssetDatabase.LoadAssetAtPath<EditorCustomStylesConfig>(
+                    "Packages/com.sweetjelly.editor/Editor/Resources/EditorCustomStylesConfig.asset");
         }
 
         private static void LoadStylesData()
@@ -109,39 +120,10 @@ namespace SWeetJelly.Editor
 
             EditorCustomStylesConfig loadedConfig = LoadProjectConfig();
 
-            if (loadedConfig == null)
+            if (loadedConfig == null || loadedConfig.Version < RequiredConfigVersion || loadedConfig.Skin == null)
             {
-                stylesLoadAttempt++;
-
-                if (stylesLoadAttempt <= MaxStylesLoadAttempt)
-                {
-                    ScheduleLoadStylesData();
-                    return;
-                }
-
-                Debug.LogError(
-                    $"EditorCustomStylesConfig was not found at '{ProjectConfigAssetPath}'. " +
-                    $"Run '{ImportMenuPath}' to install the editor custom styles resources.");
-
-                return;
-            }
-
-            if (loadedConfig.Version < RequiredConfigVersion)
-            {
-                Debug.LogError(
-                    $"EditorCustomStylesConfig is outdated. " + $"Required version: {RequiredConfigVersion}, " + $"found version: {loadedConfig.Version}. " +
-                    $"Check for updates or run '{ImportMenuPath}' to re-import the editor custom styles resources.");
-
-                return;
-            }
-
-            if (loadedConfig.Skin == null)
-            {
-                Debug.LogError(
-                    $"EditorCustomStylesConfig was found at '{ProjectConfigAssetPath}', " +
-                    "but its GUISkin reference is missing. " +
-                    $"Check the config asset or run '{ImportMenuPath}' again.");
-
+                if (stylesLoadAttempt++ == 0)
+                    Debug.LogWarning("Editor styles are unavailable; using built-in styles. Check the project override or package assets.");
                 return;
             }
 

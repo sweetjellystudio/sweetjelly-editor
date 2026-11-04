@@ -1,68 +1,98 @@
-﻿using System.Collections;
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
 namespace SWeetJelly.Editor
 {
+    [InitializeOnLoad]
     public static class EditorCoroutines
     {
-        static readonly List<Coroutine> coroutines = new List<Coroutine>();
+        private static readonly List<Coroutine> coroutines = new List<Coroutine>();
+        private static bool shuttingDown;
 
-        public static void Execute(IEnumerator enumerator, System.Action<bool> OnUpdate = null)
+        static EditorCoroutines()
         {
-            if (coroutines.Count == 0)
-            {
-                EditorApplication.update += Update;
-            }
-            var coroutine = new Coroutine { enumerator = enumerator, OnUpdate = OnUpdate };
+            AssemblyReloadEvents.beforeAssemblyReload += Shutdown;
+            EditorApplication.quitting += Shutdown;
+        }
+
+        private static void Shutdown() { shuttingDown = true; StopAll(); }
+
+        public static void Execute(IEnumerator enumerator, Action<bool> OnUpdate = null)
+        {
+            if (enumerator == null) throw new ArgumentNullException(nameof(enumerator));
+            if (shuttingDown) throw new InvalidOperationException("The Editor coroutine scheduler is shutting down.");
+            if (coroutines.Count == 0) EditorApplication.update += Update;
+            var coroutine = new Coroutine { OnUpdate = OnUpdate };
+            coroutine.stack.Push(enumerator);
             coroutines.Add(coroutine);
         }
 
         private static void Update()
         {
-            for (int i = 0; i < coroutines.Count; i++)
+            foreach (var coroutine in coroutines.ToArray())
             {
-                var coroutine = coroutines[i];
-                bool done = !coroutine.enumerator.MoveNext();
-                if (done)
+                if (!coroutines.Contains(coroutine)) continue;
+                try
                 {
-                    if (coroutine.history.Count == 0)
+                    var current = coroutine.stack.Peek();
+                    bool moved = current.MoveNext();
+                    if (!coroutines.Contains(coroutine)) continue;
+                    if (!moved)
                     {
-                        coroutines.RemoveAt(i);
-                        i--;
+                        coroutine.stack.Pop();
+                        (current as IDisposable)?.Dispose();
+                        if (!coroutines.Contains(coroutine)) continue;
                     }
-                    else
+                    else if (current.Current is IEnumerator nested)
                     {
-                        done = false;
-                        coroutine.enumerator = coroutine.history[coroutine.history.Count - 1];
-                        coroutine.history.RemoveAt(coroutine.history.Count - 1);
+                        if (coroutine.stack.Contains(nested))
+                            throw new InvalidOperationException("An Editor coroutine cannot yield itself or an ancestor.");
+                        coroutine.stack.Push(nested);
                     }
+                    bool done = coroutine.stack.Count == 0;
+                    if (done) Remove(coroutine);
+                    coroutine.OnUpdate?.Invoke(done);
                 }
-                else
+                catch (Exception exception)
                 {
-                    if (coroutine.enumerator.Current is IEnumerator)
-                    {
-                        coroutine.history.Add(coroutine.enumerator);
-                        coroutine.enumerator = (IEnumerator)coroutine.enumerator.Current;
-                    }
+                    Remove(coroutine);
+                    Dispose(coroutine, exception);
+                    break;
                 }
-                if (coroutine.OnUpdate != null) coroutine.OnUpdate(done);
             }
+        }
+
+        private static void Remove(Coroutine coroutine)
+        {
+            coroutines.Remove(coroutine);
             if (coroutines.Count == 0) EditorApplication.update -= Update;
+        }
+
+        private static void Dispose(Coroutine coroutine, Exception failure = null)
+        {
+            while (coroutine.stack.Count > 0)
+            {
+                try { (coroutine.stack.Pop() as IDisposable)?.Dispose(); }
+                catch (Exception exception) { if (failure == null) failure = exception; }
+            }
+            if (failure != null) Debug.LogException(failure);
         }
 
         public static void StopAll()
         {
+            var stopped = coroutines.ToArray();
             coroutines.Clear();
             EditorApplication.update -= Update;
+            foreach (var coroutine in stopped) Dispose(coroutine);
         }
 
-        private class Coroutine
+        private sealed class Coroutine
         {
-            public IEnumerator enumerator;
-            public System.Action<bool> OnUpdate;
-            public List<IEnumerator> history = new List<IEnumerator>();
+            internal readonly Stack<IEnumerator> stack = new Stack<IEnumerator>();
+            internal Action<bool> OnUpdate;
         }
     }
 }

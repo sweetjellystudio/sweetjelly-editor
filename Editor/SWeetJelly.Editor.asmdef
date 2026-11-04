@@ -4,6 +4,7 @@
     "references": [
         "SWeetJelly.Editor.Attributes",
         "Unity.TextMeshPro",
+        "UnityEngine.UI",
         "SWeetJelly.Utils"
     ],
     "includePlatforms": [

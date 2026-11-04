@@ -16,9 +16,16 @@ namespace SWeetJelly.Editor
         private PropertyConditionDrawer propertyCondition;
 
         private List<Type> nestedTypes;
+        private string propertyPath;
+        private bool conditionFailed;
+        private readonly HashSet<string> diagnostics = new HashSet<string>();
 
         public UnwrapNestedGUIRenderer(SweetJellyEditor editor, FieldInfo fieldInfo, GUIRenderer[] renderers, object targetObject, List<Type> nestedTypes)
+            : this(editor, fieldInfo, renderers, targetObject, nestedTypes, null) { }
+
+        internal UnwrapNestedGUIRenderer(SweetJellyEditor editor, FieldInfo fieldInfo, GUIRenderer[] renderers, object targetObject, List<Type> nestedTypes, string propertyPath)
         {
+            this.propertyPath = propertyPath;
             this.editor = editor;
             this.targetObject = targetObject;
             this.fieldInfo = fieldInfo;
@@ -45,11 +52,15 @@ namespace SWeetJelly.Editor
 
         public override void OnGUI()
         {
+            UpdateVisabilityState();
             if (!IsVisible) return;
 
+            using (new UnityEditor.EditorGUI.DisabledScope(conditionFailed))
+            {
             foreach (GUIRenderer renderer in renderers)
             {
                 renderer.OnGUI();
+            }
             }
         }
 
@@ -65,10 +76,22 @@ namespace SWeetJelly.Editor
 
         private void UpdateVisabilityState()
         {
+            conditionFailed = false;
+            try
+            {
             if (propertyCondition != null)
             {
-                // Check if visible
-                if (propertyCondition.CanBeDrawn(editor, fieldInfo, targetObject, nestedTypes))
+                bool? first = null;
+                bool mixed = false;
+                foreach (var root in editor.targets)
+                {
+                    var owner = propertyPath == null ? ReferenceEquals(targetObject, editor.target) ? root : targetObject : InspectorReflection.Owner(root, propertyPath);
+                    bool value = propertyCondition.CanBeDrawn(editor, fieldInfo, owner, PropertyUtility.GetClassNestedTypes(owner.GetType()));
+                    if (first.HasValue && first.Value != value) mixed = true;
+                    if (!first.HasValue) first = value;
+                }
+                conditionFailed = mixed;
+                if (mixed || first == true)
                 {
                     IsVisible = renderers.IsAnyObjectVisible();
                 }
@@ -80,6 +103,14 @@ namespace SWeetJelly.Editor
             else
             {
                 IsVisible = renderers.IsAnyObjectVisible();
+            }
+            }
+            catch (Exception exception)
+            {
+                conditionFailed = true;
+                IsVisible = true;
+                exception = InspectorReflection.Unwrap(exception);
+                if (diagnostics.Add(exception.GetType().Name + ":" + exception.Message)) UnityEngine.Debug.LogException(exception, editor.target);
             }
         }
     }

@@ -9,7 +9,7 @@ namespace SWeetJelly.Editor
             "SWeetJelly/Tools/Import Editor Custom Styles";
 
         private const string EditorCustomStylesPackagePath =
-            "Packages/com.sweetjelly.editor/Resources/EditorCustomStylesResources.unitypackage";
+            "Packages/com.sweetjelly.editor/Editor/Resources/EditorCustomStylesResources.unitypackage";
 
         [MenuItem(ImportMenuPath)]
         private static void ImportEditorCustomStyles()

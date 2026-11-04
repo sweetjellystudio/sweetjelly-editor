@@ -2,6 +2,8 @@
 
 `SWeetJelly Editor` is a Unity editor utility package for SWeetJelly projects. It provides inspector attributes, custom drawer infrastructure, shared editor GUI helpers, editor style resources, and small Unity Editor convenience tools.
 
+Version 2.0 requires Unity 6.3 LTS, Utils 2.0.0 and uGUI 2.0.0. Generic Inspectors use native UI Toolkit; existing SweetJellyEditor/GUIRenderer IMGUI extensions remain supported. Bundled styles work without an import, and existing project overrides take priority. See [migration and Git installation][migration], [architecture][architecture] and the Package Manager **Inspector Showcase** sample.
+
 ## Features
 
 - Inspector attributes for grouping, conditions, labels, buttons, tabs, and read-only states
@@ -63,3 +65,6 @@ public sealed class SampleSettings : MonoBehaviour
 ## Notes
 
 This package is editor-focused. Runtime gameplay code should depend only on `SWeetJelly.Editor.Attributes` when serialized-field annotations are needed, and should avoid referencing editor-only APIs.
+
+[migration]: Documentation~/migration-2.0.md
+[architecture]: ARCHITECTURE.md

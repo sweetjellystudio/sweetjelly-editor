@@ -1,0 +1,5 @@
+{
+  "name": "SWeetJelly.Editor.Samples",
+  "references": ["SWeetJelly.Editor.Attributes"],
+  "autoReferenced": true
+}
